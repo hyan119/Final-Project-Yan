@@ -1,0 +1,500 @@
+---
+title: "PSTAT 131 - Final Project"
+author: "Haodong Yan (9638180)"
+date: "Dec 02, 2022"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+# Introduction
+
+The purpose of this project is to generate a model that will be able to predict the credit card payment status based on the application record and credit record of the credit card user.
+
+<table><tr>
+<td> <img src="image/CreditCardsImage.jpg" alt="Drawing" style="width: 450px;"/> </td>
+</tr></table>
+<p align="center">
+<em>  
+
+### Credit Scores
+
+Credit score cards are a common risk control method in the banking systems. It uses personal information and historical records from credit card applicants to analyze the "credibility" of credit card holders. Using this information, banks are able to determine the kinds of actions to take for people with different creditworthiness.
+
+<table><tr>
+<td> <img src="image/CreditScore.png" alt="Drawing" style="width: 450px;"/> </td>
+</tr></table>
+<p align="center">
+<em>  
+
+### How my model can be helpful
+
+This model can be helpful by helping credit companies predict the potential credit performance of a user based on their application data, finding out whether or not an applicant is eligible for their application.
+
+# Loading Data  
+
+### Packages and Seed  
+```{r}
+library(dplyr) 
+library(tidymodels)
+library(tidyverse)
+library(ggplot2)
+library(corrplot)
+library(janitor)
+library(ISLR)
+library(rpart.plot)
+library(vip)
+library(randomForest)
+library(xgboost)
+library(parsnip)
+library(ranger)
+library(tibble)
+library(ggcorrplot)
+library(caret)
+library(klaR)
+library(pROC)
+library(discrim)
+library(pROC)
+tidymodels_prefer()
+set.seed(0213)
+```
+
+### Raw Data  
+
+The raw data is obtain from [Credit Card Approval Prediction (Cleaned Version)](https://www.kaggle.com/datasets/caesarmario/application-data) on Kaggle, which is a dataset derived from [Credit Card Approval Prediction](https://www.kaggle.com/datasets/rikdifos/credit-card-approval-prediction) datasets.
+```{r}
+applications_raw = read.csv("data/Application_Data.csv")
+applications_raw = applications_raw %>% clean_names()
+head(applications_raw)
+dim(applications_raw)
+```
+There are 25128 applicants and 21 information attributes to each one of them. 
+
+```{r}
+summary(applications_raw)
+```
+No missing values are recorded
+### Overview of Raw Dataset
+
+Here are some of the key variables that are helpful to be aware of for this report, check the codebook for the complete version:
+
+- ```applicant_id```: Client number
+
+- ```applicant_gender```: Gender
+
+- ```owned_car```: Whether or not the applicant owned a car
+
+- ```total_income```: Annual income
+
+- ```income_type```: Income category
+
+- ```family_status```: Marital status
+
+- ```total_family_members```: Family size
+
+- ```job_title```: Job title
+
+- ```applicant_age```: Age
+
+- ```years_of_working:``` Years worked
+
+- ```total_bad_debt```: Total amount of bad debts. Bad Debt: loan is 30 or more days overdue.
+
+- ```total_good_debt```: Total amount of good debts. Good Debt: loan is 30 or less days overdue/ paid on time/ no loan for that month.
+
+- ```status```: If the total of Good Debt is higher than Bad Debt, then an applicant status will be eligible (1). If the total of Bad Debt is higher than Good Debt, then an applicant status will be not eligible (0).
+
+### Data Cleaning
+The data has been cleaned by [\@Mario Caesar](https://www.kaggle.com/caesarmario), but further actions on cleaning data needs to be taken as well. 
+
+```applicant_id``` is not important for building our models; the value for ```owned_mobile_phone``` is always 1.
+
+```{r}
+applications = applications_raw %>% 
+  select(-applicant_id, -owned_mobile_phone)
+head(applications)
+```
+#### Redefining Status
+Redefine Status to applicant having 15% or more debts as bad debts will be considered not eligible(value 0), having 15% or less as bad debts will be eligible(value 1). I did this because the original standard is too high that most people will likely be eligible for the application. Also, remove total_bad_debt and total_good_debt as they determines the value of status
+```{r}
+applications = applications %>% mutate(status = ifelse(total_bad_debt/(total_bad_debt+total_good_debt) < 0.15, 1, 0)) %>% 
+  select(-total_bad_debt,-total_good_debt)
+```
+
+Factor all the categorical variables
+```{r}
+applications = applications %>% mutate(applicant_gender = factor(applicant_gender), owned_car  = factor(owned_car), owned_realty = factor(owned_realty), income_type = factor(income_type), education_type = factor(education_type), family_status = factor(family_status), housing_type =factor(housing_type), owned_work_phone = factor(owned_work_phone), owned_phone =factor(owned_phone), owned_email = factor(owned_email), job_title = factor(job_title), status = factor(status))
+
+head(applications)
+```
+Now I am finished with data cleaning, and here is a summary of the data.
+
+```{r}
+summary(applications)
+dim(applications)
+```
+
+### Data Split  
+
+I choose to split the data into 70% training set and 30% testing set. 
+```{r}
+applications_split = initial_split(applications, prop = 0.7, strata = status)
+applications_train = training(applications_split)
+applications_test = testing(applications_split)
+
+
+dim(applications_train)
+dim(applications_test)
+dim(applications_train)[1] / dim(applications)[1]
+dim(applications_train) + dim(applications_test) 
+```
+
+The ratio between training and testing set is approximately 7:3, and has the right number of total observations. The split is appropriate.
+
+# Exploratory Data Analysis  
+
+I am doing analysis in only the training set.
+
+There are 17589 observations and 17 variables in the training set. 
+
+Number of observations for each status
+```{r}
+applications_train %>% ggplot(aes(status)) + geom_bar() + labs(title = "Status Count in Training Set", x = "Status", y = "Count") + coord_flip()
+```
+
+Not many applicants have an non-eligible(0) status.  
+
+  
+Status by Gender
+```{r}
+applications_train %>% 
+  group_by(status,applicant_gender) %>% count %>%
+  ggplot(aes(status, n)) + geom_col(show.legend = FALSE) + facet_wrap(~applicant_gender) + labs(title = "Status by Gender", y = "Count", x = "Gender")
+```
+
+There are less males than females, but the ratio of non-eligible(0) status to eligible(1) status is greater for males.
+
+```{r}
+applications_train %>% 
+  ggplot(aes(status)) +
+  geom_histogram(stat="count") +
+  facet_wrap(~housing_type) +
+  labs(
+    title = "Status by housing_type")
+```
+
+```{r}
+applications_train %>% 
+  filter(status %in% c(0,1)) %>%
+  ggplot(aes(status)) +
+  geom_histogram(stat="count") +
+  facet_wrap(~housing_type, scales = "free_y") +
+  labs(
+    title = "Status by housing_type")
+```
+Different housing type have different amount of applicants/ observations. House/ apartment has the highest amount of observations.
+
+  
+Age distribution
+```{r}
+ggplot(applications_train, aes(applicant_age)) +
+  geom_histogram()
+```
+Most applicants are from 25-60 years old.
+
+  
+Finding correlations between different numeric variables
+```{r}
+applications_train %>% 
+  select(is.numeric) %>% 
+  cor() %>% 
+  corrplot(type = "lower",  method = 'color', tl.cex = 0.5)
+```
+The plot shows that there is a strong positive relationship between total_children and total_family_members. It makes sense because the amount of family members heavily depends on the number of the children ub the family. 
+
+# Model Building  
+
+## Cross Validation  
+I fold the training set using v-fold cross-validation, with v = 5. Stratify on the outcome variable.
+
+```{r}
+applications_fold = vfold_cv(data = applications_train, v = 5, strata = status)
+```
+
+## Recipe building  
+
+Since I have cleaned the data before and discarded variables that are not useful for building our models, I can just use all the variables in my formula for the recipe.
+```{r}
+applications_recipe = recipe(status~ applicant_gender+owned_car+owned_realty+total_children+total_income+income_type+education_type+family_status+housing_type+owned_work_phone+owned_phone+owned_email+job_title+total_family_members+applicant_age+years_of_working, applications_train) %>%
+  step_impute_linear(total_children, impute_with = imp_vars(total_family_members)) %>%
+  step_dummy(all_nominal_predictors())  %>%
+  step_normalize(all_predictors())
+```
+I dummy-coded all nominal predictors and
+centered and scaled all predictors. I also used step_impute_linear because of the strong correlation between total_children and total_family_members.
+
+# Models
+
+## Model 1  
+
+Since this is a classification problem with binary outputs, I will test out the accuracy of Logistic Regression model and LDA on the training data. Then fit the most accurate model with the testing data and Find the accuracy of it.  
+
+### Logistic Regression Fit  
+
+Fitting a logistic regression with the glm engine
+```{r}
+log_reg = logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+log_wflow = workflow() %>% 
+  add_model(log_reg) %>% 
+  add_recipe(applications_recipe)
+
+log_fit = fit_resamples(resamples = applications_fold,log_wflow, control = control_resamples(save_pred = TRUE))
+
+```
+
+### LDA Fit  
+
+Fitting a linear discriminant analysis with the MASS engine
+```{r}
+lda = discrim_linear() %>%
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+lda_wflow = workflow() %>% 
+  add_model(lda) %>% 
+  add_recipe(applications_recipe)
+
+lda_fit = fit_resamples(resamples = applications_fold,lda_wflow, control = control_resamples(save_pred = TRUE))
+```
+
+
+There are 5 folds for each type of model, which brings a total of 10 models for both of the models.
+
+### Comparing the Model Performance  
+
+We can compare the model performance with the mean and standard errors of the performance metric accuracy across all folds for each of the three models
+```{r}
+collect_metrics(log_fit)
+collect_metrics(lda_fit)
+```
+The both models have similar performance as their mean accuracy and roc_auc are similar to each other, either model would work given the current condition. I choose logistic regression as the best performing model because the accuracy is slightly better.
+
+### Fitting the testing data  
+
+I can fit the best performing model from previously(logistic regression) to the testing data.
+```{r}
+log_fit_a = fit(log_wflow, applications_train)
+
+log_predict = predict(log_fit_a, new_data = applications_test, type = "class")  %>% 
+  bind_cols(applications_test %>% select(status)) %>% 
+  accuracy(truth = status, estimate = .pred_class)
+
+```
+
+### Fitting the testing data on LDA  
+
+Out of curiosity, I will be testing the accuracy of LDA on the testing data
+```{r}
+lda_fit_a = fit(lda_wflow, applications_train)
+
+lda_predict = predict(lda_fit_a, new_data = applications_test, type = "class")  %>% 
+  bind_cols(applications_test %>% select(status)) %>% 
+  accuracy(truth = status, estimate = .pred_class)
+```
+## Model 2  
+
+The next method I decided to use is Elastic Net Tuning. It is one of the major regularization methods.  
+
+### Elastic Net Tuning
+```{r}
+elastic = multinom_reg(penalty = tune(), mixture = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+
+elastic_workflow = workflow() %>%
+  add_recipe(applications_recipe) %>%
+  add_model(elastic)
+
+elastic_grid = grid_regular(penalty(range = c(-5, 5)), mixture(range = c(0,1)), levels = 10)
+
+tune_res = tune_grid(
+  elastic_workflow,
+  resamples = applications_fold,
+  grid = elastic_grid,
+  metrics = metric_set(roc_auc)
+)
+autoplot(tune_res)
+```
+
+### Fitting the optimal Model  
+
+```{r}
+best = select_best(tune_res)
+elastic_final_wflow = finalize_workflow(elastic_workflow, best)
+elastic_final_fit = fit(elastic_final_wflow, data = applications_train)
+
+elastic_predict = predict(elastic_final_fit, new_data = applications_test, type = "class")  %>% 
+  bind_cols(applications_test %>% select(status)) %>% 
+  accuracy(truth = status, estimate = .pred_class)
+
+elastic_ROCAUC = augment(elastic_final_fit, new_data = applications_test) %>%
+  select(status, starts_with(".pred"))
+```
+
+# Model 3  
+
+For the third models,  random forest for our model. 
+
+### Random Forest 
+
+```{r}
+tree_spec = rand_forest() %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+class_tree_fit = tree_spec %>%
+  fit(status~ applicant_gender+owned_car+owned_realty+total_children+total_income+income_type+education_type+family_status+housing_type+owned_work_phone+owned_phone+owned_email+job_title+total_family_members+applicant_age+years_of_working, data = applications_train)
+
+class_tree_wf = workflow() %>%
+  add_model(tree_spec %>% set_args(mtry = tune(), trees = tune(), min_n = tune())) %>%
+  add_formula(status~ applicant_gender+owned_car+owned_realty+total_children+total_income+income_type+education_type+family_status+housing_type+owned_work_phone+owned_phone+owned_email+job_title+total_family_members+applicant_age+years_of_working)
+
+regular_grid = grid_regular(mtry(range = c(1,16)), trees(range = c(1,500)), min_n(range = c(1,30)), levels = 4)
+```  
+
+For tuning values, we have range 1 to 16 because there is a maximum of 16 predictors in the model. I gave the trees a range from 1 to 500 to cover a wider range of number of trees in the ensemble. Then I gave the min_n value a range from 1 to 100 to find the best amount of points in a node in order to split further.
+
+```{r}
+tree_res = tune_grid(
+  class_tree_wf, 
+  resamples = applications_fold, 
+  grid = regular_grid, 
+  metrics = metric_set(roc_auc)
+)
+
+autoplot(tree_res)
+```
+
+Now we can find the best tuning values for the random forest.
+```{r}
+tree_res %>% 
+  collect_metrics() %>%
+  arrange(by_group = desc(mean))
+```  
+
+We can see the importance of each variable by creating a variable importance plot
+```{r}
+class_tree_fit %>%
+  extract_fit_engine() %>%
+  vip()
+```
+Total income has the most effect on the status/ prediction, owned_work_phone has the least effect on the status/ prediction.  
+
+We can uses these value to find the best model fit.
+```{r}
+best_trees = select_best(tree_res)
+
+tree_forest_final = finalize_workflow(class_tree_wf, best_trees)
+
+tree_forest_final_fit = fit(tree_forest_final, data = applications_train)
+
+tree_forest_predict = predict(tree_forest_final_fit, new_data = applications_test, type = "class")  %>% 
+  bind_cols(applications_test %>% select(status)) %>% 
+  accuracy(truth = status, estimate = .pred_class)
+
+tree_forest_ROCAUC = augment(tree_forest_final_fit, new_data = applications_test) %>%
+  select(status, starts_with(".pred"))
+```
+
+
+
+# Model 4
+
+For the final model, I am going to use Boosted Trees Regression. It is a method similar to the bagging method, or the regular random forest method, but build trees sequentially instead of parallel.  
+
+### Boosted Trees
+```{r}
+boost_spec = boost_tree(tree_depth = 4) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+boost_fit = fit(boost_spec, status~ applicant_gender+owned_car+owned_realty+total_children+total_income+income_type+education_type+family_status+housing_type+owned_work_phone+owned_phone+owned_email+job_title+total_family_members+applicant_age+years_of_working, data = applications_train)
+
+boost_wf = workflow() %>%
+  add_model(boost_spec %>% set_args(trees = tune())) %>%
+  add_formula(status~ applicant_gender+owned_car+owned_realty+total_children+total_income+income_type+education_type+family_status+housing_type+owned_work_phone+owned_phone+owned_email+job_title+total_family_members+applicant_age+years_of_working)
+
+boost_grid = grid_regular(trees(range = c(10,400)), levels = 5)
+```  
+
+For tuning values, I gave the trees a range from 10 to 400 to cover a wider range of number of trees in the ensemble. I set the levels to 5 to control the computational power needed.  
+
+```{r}
+tune_boosted = tune_grid(
+  boost_wf,
+  resamples = applications_fold,
+  grid = boost_grid,
+  metrics = metric_set(roc_auc)
+)
+autoplot(tune_boosted)
+```
+
+Then we find the best tuning value for the boosted tree  
+```{r}
+best_boosted = select_best(tune_boosted)
+
+boosted_trees_final_wf = finalize_workflow(boost_wf, best_boosted)
+
+boosted_trees_final_fit = fit(boosted_trees_final_wf, data = applications_train)
+
+boosted_trees_predict = predict(boosted_trees_final_fit, new_data = applications_test, type = "class")  %>% 
+  bind_cols(applications_test %>% select(status)) %>% 
+  accuracy(truth = status, estimate = .pred_class)
+
+boost_trees_ROCAUC = augment(boosted_trees_final_fit, new_data = applications_test) %>%
+  select(status, starts_with(".pred"))
+```
+
+# Comparing Different Models  
+
+```{r}
+accuracies = bind_rows(log_predict,lda_predict,elastic_predict,tree_forest_predict, boosted_trees_predict) %>% 
+  tibble() %>% 
+  mutate(model = c("Logistic Regression", "LDA", "Elastic Net Tuning", "Random Tree Forest", "Boosted Trees")) %>% 
+  select(model, .estimate) %>%
+  arrange(desc(.estimate))
+
+accuracies
+
+roc_aucs = bind_rows(df = data.frame(.estimate = collect_metrics(log_fit)$mean[2]), df1 = data.frame(.estimate = collect_metrics(lda_fit)$mean[2]),elastic_ROCAUC %>% roc_auc(status, .pred_0),tree_forest_ROCAUC%>% roc_auc(status, .pred_0), boost_trees_ROCAUC %>% roc_auc(status, .pred_0)) %>% 
+  tibble() %>% 
+  mutate(model = c("Logistic","LDA","Elastic Net Tuning", "Random Tree Forest", "Boosted Trees")) %>% 
+  select(model, .estimate) %>%
+  arrange(desc(.estimate))
+
+roc_aucs
+```
+
+By looking at the accuracy of different models, we can see that Random Tree Forest has the best performance predicting status of credit application applicants. This model has both the highest accuracy and highest ROC_AUC values.
+
+# Conclusion  
+
+We went through the dataset and learned about variables in the dataset. I used logistic regression, elastic net tuning(using multinomial regression + Lasso), random forest and boosted trees to build models from our dataset.
+
+I originally thought the best model in this case would be logistic regression since it is useful in most cases when we are predicting an binary result. Through analyzing the results of accuracy and ROC_AUC values, I find that the best model to make predictions is the Random Trees Forest method. I think the reason why logistic regression did not do as well is because the model is very imbalanced with most observations have 1 as status and only a few having 0 status. Also, random tree forest model usually performs well on categorical data. The data we used mainly consisted of categorical data, and methods based on decision trees had better performances.
+
+This research shows random tree forest would be the best model to use in our case. It will be best for making predictions on the status of the applicant based of their credit application information.
+
+
